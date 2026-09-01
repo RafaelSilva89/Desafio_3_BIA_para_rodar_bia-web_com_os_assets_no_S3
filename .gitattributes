@@ -1,0 +1,8 @@
+# Scripts Shell precisam de quebra de linha LF em qualquer sistema.
+# Sem isto, um clone no Windows os entrega com CRLF e o bash responde
+# "$'\r': command not found" na primeira linha.
+*.sh text eol=lf
+
+# Imagens sao binarias — o git nao deve tentar converter nada nelas.
+*.png binary
+*.jpg binary

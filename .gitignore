@@ -1,0 +1,22 @@
+# Clone de referencia da BIA usado apenas para o build local.
+# Tem .git proprio (viraria submodulo) e nao e entregavel deste desafio.
+bia/
+
+# Dependencias do Node — sao reinstaladas por "npm install"
+node_modules/
+
+# Chaves privadas de acesso a EC2. NUNCA versionar.
+*.pem
+
+# Arquivo com os identificadores do seu ambiente AWS
+# (conta, instance IDs, security groups, IP da API, nome do bucket)
+variaveis.sh
+.env
+
+# Artefatos de build do React
+client/build/
+dist/
+
+# Lixo de sistema operacional
+.DS_Store
+Thumbs.db
