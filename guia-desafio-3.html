@@ -406,7 +406,7 @@
  +-----------------------------+      +------------------------------------------------+
  |  aws cli v2  (formacao_aws) |      |                                                |
  |  node 25 / npm 11           | ssm  |   EC2 bia-dev  i-xxxxxxxxxxxx-dev              |
- |                             |=====>|   docker run: db:create + db:migrate           |
+ |                             |=====>|   docker compose: db:create + db:migrate       |
  |  pasta do repo (GitHub)     |      |          |                                     |
  |     +-- deploy.sh           |      |          | 5432                                |
  |     +-- react.sh  s3.sh     |      |          v                                     |
@@ -903,6 +903,33 @@ voce@maquina:~$</pre></div>
         <div class="out good"><span class="out-label">Resposta esperada</span><pre>sg-xxxxxxxxxxxx-db | sg-xxxxxxxxxxxx-dev | i-xxxxxxxxxxxx-dev</pre></div>
       </div>
 
+      <div class="ascii">
+<pre>
+        ORIGENS (tentando falar na porta 5432)            DESTINO
+
+ +----------------------------------+
+ |  bia-web     sg-xxxxxxxxxxxx-web | --- OK ----+
+ |  a API, rodando no ECS           |            |
+ +----------------------------------+            |   +------------------------------+
+                                                 +-->|  RDS "bia"  (nao publico)    |
+ +----------------------------------+            |   |  SG do banco: bia-db         |
+ |  bia-dev     sg-xxxxxxxxxxxx-dev | ---- X ----+   |  sg-xxxxxxxxxxxx-db          |
+ |  onde a migrate vai rodar        |      ^         |  escutando na 5432           |
+ +----------------------------------+      |         +------------------------------+
+                                           |
+   o compose.yml ja aponta para o RDS      |
+   certo, mas a conexao morre aqui:   -----+
+   o SG do banco nao conhece o SG
+   da bia-dev
+
+ SOLUCAO (passo 3.1) -- uma regra de entrada no sg-xxxxxxxxxxxx-db
+   porta    5432
+   origem   sg-xxxxxxxxxxxx-dev   (o Security Group, nao um IP)
+   efeito   a linha do bia-dev vira OK, sem expor o banco na internet
+</pre>
+      </div>
+      <p>O erro que essa falta produz não é um "acesso negado": a conexão simplesmente não volta, e a migrate fica pendurada até dar <code>ETIMEDOUT</code>. Por isso a regra vem <b>antes</b> da Fase 4 aqui — na aula ela aparece depois, como conserto do timeout.</p>
+
       <div class="step" id="passo-3-1">
         <div class="step-top"><a class="step-id" href="#passo-3-1">3.1</a><h3>Liberar a porta 5432 para o SG da bia-dev</h3><span class="where w-wsl">WSL</span></div>
         <p>A origem da regra é um Security Group, não um IP. É assim que a AWS libera "qualquer máquina que use o SG bia-dev", sem depender de IP fixo.</p>
@@ -998,14 +1025,15 @@ voce@maquina:~$</pre></div>
         <span class="phase-n">FASE 4</span>
         <div>
           <h2>Criar o database e rodar a migrate pela bia-dev</h2>
-          <p>Este é o "X" do diagrama do desafio: o WSL não fala com o RDS. Quem cria a estrutura é a bia-dev, alcançada por SSM — e tudo roda em contêiner, sem instalar nada na máquina.</p>
+          <p>Este é o "X" do diagrama do desafio: o WSL não fala com o RDS. Quem cria a estrutura é a bia-dev, alcançada por SSM — subindo o projeto pelo compose, como na aula, e sem instalar nada na máquina.</p>
         </div>
         <span class="phase-count" data-count-for="p4"></span>
       </div>
 
-      <div class="note n-warn">
-        <b>Aqui não se usa o <code>compose.yml</code></b>
-        <p>O compose do projeto sobe um PostgreSQL <b>local</b>, para desenvolvimento. O banco deste desafio é o RDS, então a migrate aponta para o endpoint dele — usar o compose criaria as tabelas no lugar errado.</p>
+      <div class="note n-key">
+        <b>O <code>compose.yml</code> é o caminho — depois de apontá-lo para o RDS</b>
+        <p>Do jeito que vem do repositório, o compose sobe um PostgreSQL <b>local</b>, para desenvolvimento: migrar assim criaria as tabelas no lugar errado. É esse apontamento que o passo 4.4 troca pelo endpoint do RDS, e só então o projeto sobe (4.5) para a migrate sair de dentro dele.</p>
+        <p>O banco local continua subindo junto, e fica sem uso — quem responde passa a ser o RDS. Quem tiver pressa encontra no 4.5 uma alternativa que dispensa o build da imagem.</p>
       </div>
 
       <div class="step" id="passo-4-1">
@@ -1015,17 +1043,30 @@ voce@maquina:~$</pre></div>
         <div class="cmd"><span class="cmd-label">Já dentro da bia-dev — troque de usuário</span><button class="copy" type="button">copiar</button><pre><span class="p">sh-5.2$ </span>sudo su - ec2-user</pre></div>
         <div class="cmd"><span class="cmd-label">Só depois que o prompt virar [ec2-user ~]$</span><button class="copy" type="button">copiar</button><pre><span class="p">[ec2-user ~]$ </span>pwd
 <span class="p">[ec2-user ~]$ </span>docker --version
+<span class="p">[ec2-user ~]$ </span>docker compose version
 <span class="p">[ec2-user ~]$ </span>docker ps</pre></div>
         <div class="out good"><span class="out-label">Resposta esperada</span><pre>/home/ec2-user
 Docker version 25.x.x, build ...
+Docker Compose version v2.x.x
 CONTAINER ID   IMAGE   COMMAND   CREATED   STATUS   PORTS   NAMES</pre></div>
         <p>O <code>sudo su - ec2-user</code> troca de usuário <b>e</b> já abre na home dele — é o hífen que faz isso, carregando o ambiente de login. Por isso o prompt vira <code>[ec2-user ~]$</code>, com o <code>~</code> de <code>/home/ec2-user</code>.</p>
         <div class="note n-warn"><b>Deu <code>permission denied</code> no <code>docker ps</code>?</b><p>O usuário não está no grupo do Docker. Resolva com <code>sudo usermod -aG docker ec2-user</code> e reabra a sessão, ou simplesmente prefixe os comandos desta fase com <code>sudo</code>.</p><p>Se a resposta for <code>Cannot connect to the Docker daemon</code>, o serviço está parado: <code>sudo systemctl start docker</code>.</p></div>
+        <details class="fallback">
+          <summary>O <code>docker compose version</code> respondeu <code>'compose' is not a docker command</code>?</summary>
+          <p>A máquina tem o Docker, mas não o plugin do Compose — que é o que os passos 4.4 e 4.5 usam. Instale o plugin no diretório onde o Docker procura seus subcomandos:</p>
+          <div class="cmd"><span class="cmd-label">Comando</span><button class="copy" type="button">copiar</button><pre><span class="p">[ec2-user ~]$ </span>sudo mkdir -p /usr/local/lib/docker/cli-plugins
+<span class="p">[ec2-user ~]$ </span>sudo curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+<span class="p">[ec2-user ~]$ </span>sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+<span class="p">[ec2-user ~]$ </span>docker compose version</pre></div>
+          <p>Se preferir não instalar nada, a alternativa em <code>docker run</code> do passo 4.5 faz o mesmo trabalho sem o Compose.</p>
+        </details>
         <div class="note n-warn"><b>A partir daqui, o <code>variaveis.sh</code> não existe mais</b><p>Você está em <b>outra máquina</b>, como <b>outro usuário</b>. O <code>~/DESAFIOS-FUNDAMENTAIS/variaveis.sh</code> mora no seu WSL, na home do seu usuário de lá — aqui dentro o <code>source</code> dele responde <code>No such file or directory</code>, e isso é esperado. As variáveis desta fase são exportadas à mão no passo 4.3.</p></div>
-        <div class="note n-tip"><b>Por que são dois blocos, e não um</b><p>O <code>sudo su -</code> abre um shell novo. Linhas coladas <b>junto com ele</b> não chegam nesse shell: ficam paradas no buffer de entrada do shell de fora e só são executadas quando você sair dele, lá no passo 4.6 — aparecendo como saída solta, muito tempo depois, sem relação nenhuma com o que você acabou de digitar. Some tudo aqui e ressurge uma hora adiante.</p><p>Por isso o <code>sudo su -</code> vai sozinho: espere o prompt virar <code>[ec2-user ~]$</code> antes de colar o segundo bloco. Vale para qualquer comando que troque de shell — <code>aws ssm start-session</code> inclusive.</p></div>
+        <div class="note n-tip"><b>Por que são dois blocos, e não um</b><p>O <code>sudo su -</code> abre um shell novo. Linhas coladas <b>junto com ele</b> não chegam nesse shell: ficam paradas no buffer de entrada do shell de fora e só são executadas quando você sair dele, lá no passo 4.7 — aparecendo como saída solta, muito tempo depois, sem relação nenhuma com o que você acabou de digitar. Some tudo aqui e ressurge uma hora adiante.</p><p>Por isso o <code>sudo su -</code> vai sozinho: espere o prompt virar <code>[ec2-user ~]$</code> antes de colar o segundo bloco. Vale para qualquer comando que troque de shell — <code>aws ssm start-session</code> inclusive.</p></div>
         <div class="check"><div class="check-label">Checklist</div><ul>
           <li><label><input type="checkbox"><span>Estou como <code>ec2-user</code>, em <code>/home/ec2-user</code></span></label></li>
           <li><label><input type="checkbox"><span><code>docker --version</code> responde</span></label></li>
+          <li><label><input type="checkbox"><span><code>docker compose version</code> responde (o plugin do Compose está instalado)</span></label></li>
           <li><label><input type="checkbox"><span><code>docker ps</code> lista (mesmo que vazio), sem erro de permissão</span></label></li>
         </ul></div>
       </div>
@@ -1050,13 +1091,13 @@ CONTAINER ID   IMAGE   COMMAND   CREATED   STATUS   PORTS   NAMES</pre></div>
 
       <div class="step" id="passo-4-3">
         <div class="step-top"><a class="step-id" href="#passo-4-3">4.3</a><h3>Apontar as variáveis do banco</h3><span class="where w-ec2">BIA-DEV</span></div>
-        <p>O <code>config/database.js</code> da BIA lê exatamente estas quatro variáveis e liga o SSL sozinho quando o host não é local. Elas vão ser repassadas ao contêiner no próximo passo.</p>
+        <p>O <code>config/database.js</code> da BIA lê exatamente estas quatro variáveis e liga o SSL sozinho quando o host não é local. É delas que o passo 4.4 tira o host e a senha para escrever no <code>compose.yml</code> — e são elas, também, que a alternativa em <code>docker run</code> do 4.5 repassa ao contêiner.</p>
         <div class="cmd"><span class="cmd-label">Comando</span><button class="copy" type="button">copiar</button><pre><span class="p">[ec2-user bia]$ </span>export DB_HOST=bia.xxxxxxxxxxxx.us-east-1.rds.amazonaws.com
 <span class="p">[ec2-user bia]$ </span>export DB_PORT=5432
 <span class="p">[ec2-user bia]$ </span>export DB_USER=postgres
 <span class="p">[ec2-user bia]$ </span>read -s -p "Senha do RDS (passo 3.4): " DB_PWD; export DB_PWD; echo</pre></div>
         <p>A última linha pede a senha e a lê sem exibir na tela. Cole a senha do passo 3.4 e dê Enter — não aparece nada, e é assim mesmo.</p>
-        <div class="note n-key"><b>Por que não um <code>export DB_PWD=</code> como os outros três</b><p>Um <code>export</code> com a senha escrita ali seria copiado com um texto de exemplo no lugar dela, e o erro só apareceria dois comandos depois, no 4.4, como <code>password authentication failed for user "postgres"</code> — longe da causa. O <code>read -s</code> resolve três coisas de uma vez: não há exemplo para copiar por engano, a senha não fica no histórico do bash, e não passa pela interpretação de <code>$</code>, <code>!</code> e <code>&amp;</code> que aspas duplas fariam.</p><p>Se preferir o <code>export</code> mesmo assim, use <b>aspas simples</b>: <code>export DB_PWD='a-senha-aqui'</code>.</p><p><b>Uma regra que vale sempre:</b> a linha do <code>read -s</code> tem de ser a <b>última</b> do que você colar. Ele lê a próxima linha da entrada — se houver um comando logo abaixo, é esse comando que vira a senha, e o prompt some sem esperar você digitar.</p></div>
+        <div class="note n-key"><b>Por que não um <code>export DB_PWD=</code> como os outros três</b><p>Um <code>export</code> com a senha escrita ali seria copiado com um texto de exemplo no lugar dela, e o erro só apareceria dois passos depois, no 4.5, como <code>password authentication failed for user "postgres"</code> — longe da causa. O <code>read -s</code> resolve três coisas de uma vez: não há exemplo para copiar por engano, a senha não fica no histórico do bash, e não passa pela interpretação de <code>$</code>, <code>!</code> e <code>&amp;</code> que aspas duplas fariam.</p><p>Se preferir o <code>export</code> mesmo assim, use <b>aspas simples</b>: <code>export DB_PWD='a-senha-aqui'</code>.</p><p><b>Uma regra que vale sempre:</b> a linha do <code>read -s</code> tem de ser a <b>última</b> do que você colar. Ele lê a próxima linha da entrada — se houver um comando logo abaixo, é esse comando que vira a senha, e o prompt some sem esperar você digitar.</p></div>
         <div class="cmd"><span class="cmd-label">Conferir sem mostrar a senha</span><button class="copy" type="button">copiar</button><pre><span class="p">[ec2-user bia]$ </span>echo "$DB_HOST | $DB_USER | ${#DB_PWD} caracteres"</pre></div>
         <div class="out good"><span class="out-label">Resposta esperada</span><pre>bia.xxxxxxxxxxxx.us-east-1.rds.amazonaws.com | postgres | 20 caracteres</pre></div>
         <p>O <code>${#DB_PWD}</code> conta os caracteres em vez de imprimi-los: prova que a senha entrou inteira, sem revelar qual é. Se vier <code>0 caracteres</code>, o <code>read</code> não recebeu nada — repita a linha.</p>
@@ -1068,16 +1109,48 @@ CONTAINER ID   IMAGE   COMMAND   CREATED   STATUS   PORTS   NAMES</pre></div>
       </div>
 
       <div class="step" id="passo-4-4">
-        <div class="step-top"><a class="step-id" href="#passo-4-4">4.4</a><h3>Criar o database e migrar, pelo sequelize-cli</h3><span class="where w-ec2">BIA-DEV</span></div>
-        <p>Um contêiner só resolve os dois: <code>db:create</code> cria o database <code>bia</code> e <code>db:migrate</code> cria as tabelas. Nada de SQL na mão — os dois comandos são do mesmo CLI e leem o mesmo <code>config/database.js</code> da aplicação, então a estrutura nasce igual à que a API espera.</p>
-        <div class="cmd"><span class="cmd-label">Comando</span><button class="copy" type="button">copiar</button><pre><span class="p">[ec2-user bia]$ </span>docker run --rm -v "$PWD":/app -w /app \
-  -e DB_HOST="$DB_HOST" -e DB_PORT="$DB_PORT" \
-  -e DB_USER="$DB_USER" -e DB_PWD="$DB_PWD" \
-  public.ecr.aws/docker/library/node:24.18.0-slim \
-  sh -c 'npm install --loglevel=error &amp;&amp; npx sequelize db:create &amp;&amp; npx sequelize db:migrate'</pre></div>
-        <div class="out good"><span class="out-label">Resposta esperada</span><pre>added 320 packages in 22s
+        <div class="step-top"><a class="step-id" href="#passo-4-4">4.4</a><h3>Apontar o compose.yml para o RDS</h3><span class="where w-ec2">BIA-DEV</span></div>
+        <p>O <code>compose.yml</code> da BIA nasce apontando para o PostgreSQL <b>local</b>, que ele mesmo sobe. Trocar duas linhas — o host e a senha — faz o mesmo projeto subir falando com o RDS. É de dentro dele que a migrate vai sair.</p>
+        <div class="ascii">
+<pre>
+  antes (o banco local, do proprio compose)   depois (o RDS deste desafio)
 
-Sequelize CLI [Node: 24.18.0, CLI: 6.6.3, ORM: 6.37.7]
+    DB_USER: postgres                           DB_USER: postgres
+    DB_PWD: postgres                            DB_PWD: (a senha do passo 3.4)
+    DB_HOST: database                           DB_HOST: bia.xxxxxxxxxxxx.us-east-1.rds.amazonaws.com
+    DB_PORT: 5432                               DB_PORT: 5432
+</pre>
+        </div>
+        <p>Só <code>DB_PWD</code> e <code>DB_HOST</code> mudam. O comando abaixo faz a troca com as variáveis que você exportou no passo 4.3 — assim a senha não é digitada de novo, e não há texto de exemplo para copiar por engano.</p>
+        <div class="cmd"><span class="cmd-label">Comando</span><button class="copy" type="button">copiar</button><pre><span class="p">[ec2-user bia]$ </span>sed -i "s#DB_PWD: postgres#DB_PWD: $DB_PWD#; s#DB_HOST: database#DB_HOST: $DB_HOST#" compose.yml
+<span class="p">[ec2-user bia]$ </span>grep -nE '^[[:space:]]+DB_' compose.yml</pre></div>
+        <div class="out good"><span class="out-label">Resposta esperada</span><pre>11:      DB_USER: postgres
+12:      DB_PWD: (a senha do passo 3.4)
+13:      DB_HOST: bia.xxxxxxxxxxxx.us-east-1.rds.amazonaws.com
+14:      DB_PORT: 5432</pre></div>
+        <p>O <code>grep</code> filtra só as quatro linhas que valem: as outras <code>DB_</code> do arquivo estão comentadas, e é por isso que o padrão exige espaço antes do nome.</p>
+        <div class="note n-warn"><b>A senha fica em texto puro nesse arquivo</b><p>É o mesmo ponto fraco do passo 3.4, agora em disco. O arquivo é o clone da BIA <b>dentro da bia-dev</b> — não o repositório deste desafio —, então não há o que commitar. Só não publique o <code>cat compose.yml</code> em print.</p></div>
+        <div class="note n-tip"><b>Se a senha tiver <code>&amp;</code>, <code>#</code> ou <code>\</code></b><p>Esses caracteres têm significado para o <code>sed</code> e o valor sai distorcido. Nesse caso edite à mão — <code>vi compose.yml</code>, nas quatro linhas do bloco <code>environment</code> do serviço <code>server</code>. O <code>grep</code> acima é o que confirma o resultado, de um jeito ou de outro.</p></div>
+        <div class="check"><div class="check-label">Checklist</div><ul>
+          <li><label><input type="checkbox"><span><code>DB_HOST</code> agora é o endpoint do RDS, e não <code>database</code></span></label></li>
+          <li><label><input type="checkbox"><span><code>DB_PWD</code> não é mais <code>postgres</code></span></label></li>
+          <li><label><input type="checkbox"><span><code>DB_USER</code> e <code>DB_PORT</code> continuam <code>postgres</code> e <code>5432</code></span></label></li>
+        </ul></div>
+      </div>
+
+      <div class="step" id="passo-4-5">
+        <div class="step-top"><a class="step-id" href="#passo-4-5">4.5</a><h3>Subir o projeto e rodar as migrations</h3><span class="where w-ec2">BIA-DEV</span></div>
+        <p>Com o compose apontado para o RDS, subir o projeto é o que dá o contêiner de onde a migrate sai. O serviço <code>server</code> é a API — e é dentro dele que mora o <code>sequelize-cli</code>.</p>
+        <div class="cmd"><span class="cmd-label">Comando</span><button class="copy" type="button">copiar</button><pre><span class="p">[ec2-user bia]$ </span>docker compose up -d
+<span class="p">[ec2-user bia]$ </span>docker compose ps</pre></div>
+        <div class="out good"><span class="out-label">Resposta esperada</span><pre>NAME       IMAGE                      STATUS          PORTS
+bia        bia-server                 Up 20 seconds   0.0.0.0:3001-&gt;8080/tcp
+database   postgres:17.1              Up 21 seconds   0.0.0.0:5433-&gt;5432/tcp
+redis      valkey/valkey:8.1-alpine   Up 21 seconds   0.0.0.0:6379-&gt;6379/tcp</pre></div>
+        <div class="note n-tip"><b>A primeira subida demora</b><p>O <code>compose.yml</code> traz <code>build: .</code>, então o <code>up</code> constrói a imagem da BIA — e isso inclui compilar o front com o Vite. Numa <code>t3.micro</code> são vários minutos. Da segunda vez em diante a imagem está em cache e o <code>up</code> é quase instantâneo.</p><p>Os contêineres <code>database</code> e <code>redis</code> sobem junto porque o <code>server</code> declara <code>depends_on</code>. O <code>database</code> fica sem uso — quem responde agora é o RDS —, e isso é esperado.</p></div>
+        <p>Agora a migrate, como na aula. O <code>db:create</code> vem antes porque o database <code>bia</code> ainda não existe no RDS: é exatamente o erro que o passo 1.3 registrou.</p>
+        <div class="cmd"><span class="cmd-label">Comando</span><button class="copy" type="button">copiar</button><pre><span class="p">[ec2-user bia]$ </span>docker compose exec server bash -c 'npx sequelize db:create &amp;&amp; npx sequelize db:migrate'</pre></div>
+        <div class="out good"><span class="out-label">Resposta esperada</span><pre>Sequelize CLI [Node: 24.18.0, CLI: 6.6.3, ORM: 6.37.7]
 
 Loaded configuration file "config/database.js".
 Database bia created.
@@ -1087,36 +1160,58 @@ Sequelize CLI [Node: 24.18.0, CLI: 6.6.3, ORM: 6.37.7]
 Loaded configuration file "config/database.js".
 == 20210924000838-criar-tarefas: migrating =======
 == 20210924000838-criar-tarefas: migrated (0.087s)</pre></div>
-        <p>Três detalhes que explicam o comando: o <code>-v "$PWD":/app</code> monta o projeto dentro do contêiner; o <code>-e</code> repassa as variáveis do passo 4.3; e a imagem é a mesma <code>node</code> que o <code>Dockerfile</code> da BIA usa, puxada do registry público da AWS — o que evita o limite de download do Docker Hub.</p>
-        <p>O <code>npm install</code> aqui é só o da raiz, onde mora o <code>sequelize-cli</code>. O React não entra nessa conta: ele é assunto da Fase 5, e roda no seu WSL.</p>
+        <p>Não é preciso <code>npm install</code> nenhum aqui: o <code>sequelize-cli</code> é dependência de desenvolvimento, e a limpeza do <code>Dockerfile</code> (<code>npm prune --production</code>) só passa dentro de <code>client/</code>. O <code>node_modules</code> da raiz chega inteiro na imagem, com o CLI dentro — por isso o <code>npx sequelize</code> encontra o comando.</p>
         <div class="note n-tip"><b>Respostas que não são erro</b><p><code>Database bia already exists</code> quer dizer que o <code>db:create</code> já rodou antes — o <code>db:migrate</code> na sequência continua normalmente. E <code>No migrations were executed, database schema was already up to date</code> significa que as tabelas já estavam lá.</p></div>
+        <div class="note n-warn"><b>Subiu o compose <i>antes</i> de editar o arquivo?</b><p>O contêiner guardou as variáveis antigas e vai tentar falar com o banco local. Recrie o serviço para ele reler o <code>compose.yml</code>: <code>docker compose up -d --force-recreate server</code>.</p></div>
         <details class="fallback">
-          <summary>Alternativa: usar o Dockerfile do próprio projeto</summary>
-          <p>Como você tem o <code>Dockerfile</code>, dá para construir a imagem da BIA e rodar a migrate por dentro dela. O resultado é o mesmo, mas o build também compila o front com o Vite — numa <code>t3.micro</code> isso leva vários minutos e não é necessário para migrar o banco.</p>
-          <div class="cmd"><span class="cmd-label">Comando</span><button class="copy" type="button">copiar</button><pre><span class="p">[ec2-user bia]$ </span>docker build -t bia .
-<span class="p">[ec2-user bia]$ </span>docker run --rm \
+          <summary>A migrate travou até dar timeout</summary>
+          <div class="out bad"><span class="out-label">O que aparece</span><pre>SequelizeConnectionError: connect ETIMEDOUT
+    ... bia.xxxxxxxxxxxx.us-east-1.rds.amazonaws.com:5432</pre></div>
+          <div class="ascii">
+<pre>
+  compose.yml --> RDS  [ok]        conexao na 5432 --> SG bia-db  [X]
+  -------------------------------------------------------------------
+  o timeout mora na rede, nao no arquivo: a regra de entrada
+  liberando o SG da bia-dev nao esta no lugar
+</pre>
+          </div>
+          <p>O apontamento do passo 4.4 está certo; o que falta é a regra do <b>passo 3.1</b>. Refaça-a e rode a migrate de novo — o contêiner nem precisa subir outra vez.</p>
+        </details>
+        <details class="fallback">
+          <summary>Alternativa sem build: um contêiner descartável</summary>
+          <p>O <code>up</code> constrói a imagem inteira só para chegar ao <code>sequelize-cli</code>. Dá para pular o build e fazer o mesmo trabalho com um contêiner que se apaga no fim — útil quando o build na <code>t3.micro</code> está demorando demais ou faltou espaço em disco. Não depende do <code>compose.yml</code> nem do passo 4.4.</p>
+          <div class="cmd"><span class="cmd-label">Comando</span><button class="copy" type="button">copiar</button><pre><span class="p">[ec2-user bia]$ </span>docker run --rm -v "$PWD":/app -w /app \
   -e DB_HOST="$DB_HOST" -e DB_PORT="$DB_PORT" \
   -e DB_USER="$DB_USER" -e DB_PWD="$DB_PWD" \
-  bia sh -c 'npx sequelize db:create &amp;&amp; npx sequelize db:migrate'</pre></div>
+  public.ecr.aws/docker/library/node:24.18.0-slim \
+  sh -c 'npm install --loglevel=error &amp;&amp; npx sequelize db:create &amp;&amp; npx sequelize db:migrate'</pre></div>
+          <p>O <code>-v "$PWD":/app</code> monta o projeto dentro do contêiner, o <code>-e</code> repassa as variáveis do passo 4.3, e a imagem é a mesma <code>node</code> que o <code>Dockerfile</code> da BIA usa, puxada do registry público da AWS — o que evita o limite de download do Docker Hub. O <code>npm install</code> aqui é só o da raiz, onde mora o <code>sequelize-cli</code>; o React não entra nessa conta.</p>
+          <p>Seguindo por aqui, o passo 4.6 também precisa da versão em <code>docker run</code>, já que não haverá contêiner de pé.</p>
         </details>
         <div class="check"><div class="check-label">Checklist</div><ul>
+          <li><label><input type="checkbox"><span><code>docker compose ps</code> mostra o <code>bia</code> como <code>Up</code></span></label></li>
           <li><label><input type="checkbox"><span><code>Database bia created.</code> (ou <code>already exists</code>)</span></label></li>
           <li><label><input type="checkbox"><span>A migration <code>criar-tarefas</code> aparece como <code>migrated</code></span></label></li>
           <li><label><input type="checkbox"><span>Nenhum erro de conexão, de SSL ou de autenticação</span></label></li>
         </ul></div>
       </div>
 
-      <div class="step" id="passo-4-5">
-        <div class="step-top"><a class="step-id" href="#passo-4-5">4.5</a><h3>Conferir o estado das migrations</h3><span class="where w-ec2">BIA-DEV</span></div>
-        <p>O próprio CLI diz o que já foi aplicado — não é preciso abrir o banco para isso.</p>
-        <div class="cmd"><span class="cmd-label">Comando</span><button class="copy" type="button">copiar</button><pre><span class="p">[ec2-user bia]$ </span>docker run --rm -v "$PWD":/app -w /app \
+      <div class="step" id="passo-4-6">
+        <div class="step-top"><a class="step-id" href="#passo-4-6">4.6</a><h3>Conferir o estado das migrations</h3><span class="where w-ec2">BIA-DEV</span></div>
+        <p>O próprio CLI diz o que já foi aplicado — não é preciso abrir o banco para isso. O contêiner continua de pé, então a pergunta vai pelo mesmo caminho da migrate.</p>
+        <div class="cmd"><span class="cmd-label">Comando</span><button class="copy" type="button">copiar</button><pre><span class="p">[ec2-user bia]$ </span>docker compose exec server npx sequelize db:migrate:status</pre></div>
+        <div class="out good"><span class="out-label">Resposta esperada</span><pre>Loaded configuration file "config/database.js".
+up 20210924000838-criar-tarefas.js</pre></div>
+        <p><code>up</code> significa aplicada. Se aparecer <code>down</code>, a migration não rodou — volte ao passo 4.5.</p>
+        <details class="fallback">
+          <summary>Foi pela alternativa do 4.5, sem compose?</summary>
+          <p>Não há contêiner de pé para o <code>exec</code>. A mesma pergunta, no contêiner descartável:</p>
+          <div class="cmd"><span class="cmd-label">Comando</span><button class="copy" type="button">copiar</button><pre><span class="p">[ec2-user bia]$ </span>docker run --rm -v "$PWD":/app -w /app \
   -e DB_HOST="$DB_HOST" -e DB_PORT="$DB_PORT" \
   -e DB_USER="$DB_USER" -e DB_PWD="$DB_PWD" \
   public.ecr.aws/docker/library/node:24.18.0-slim \
   npx sequelize db:migrate:status</pre></div>
-        <div class="out good"><span class="out-label">Resposta esperada</span><pre>Loaded configuration file "config/database.js".
-up 20210924000838-criar-tarefas.js</pre></div>
-        <p><code>up</code> significa aplicada. Se aparecer <code>down</code>, a migration não rodou — volte ao passo 4.4.</p>
+        </details>
         <details class="fallback">
           <summary>Quer ver as tabelas de verdade? (opcional)</summary>
           <p>Um contêiner com o cliente do PostgreSQL mostra o schema, sem instalar <code>psql</code> na máquina — ele não vem instalado na bia-dev:</p>
@@ -1135,8 +1230,16 @@ up 20210924000838-criar-tarefas.js</pre></div>
         </ul></div>
       </div>
 
-      <div class="step" id="passo-4-6">
-        <div class="step-top"><a class="step-id" href="#passo-4-6">4.6</a><h3>Voltar ao WSL e reverificar a API</h3><span class="where w-wsl">WSL</span></div>
+      <div class="step" id="passo-4-7">
+        <div class="step-top"><a class="step-id" href="#passo-4-7">4.7</a><h3>Derrubar o compose, voltar ao WSL e reverificar a API</h3><span class="where w-wsl">WSL</span></div>
+        <p>Antes de sair, derrube os contêineres. O database e as tabelas ficaram no <b>RDS</b> — nada do que a migrate fez mora aqui, então parar o compose não desfaz nenhum trabalho. O que some é só o PostgreSQL local, que ninguém estava usando.</p>
+        <div class="note n-tip"><b>Foi pela alternativa do 4.5?</b><p>Então não há compose de pé — o contêiner descartável já se apagou sozinho. Pule para o <code>exit</code>.</p></div>
+        <div class="cmd"><span class="cmd-label">Ainda na bia-dev</span><button class="copy" type="button">copiar</button><pre><span class="p">[ec2-user bia]$ </span>docker compose down</pre></div>
+        <div class="out good"><span class="out-label">Resposta esperada</span><pre>[+] Running 4/4
+ Container bia         Removed
+ Container database    Removed
+ Container redis       Removed
+ Network bia_default   Removed</pre></div>
         <p>Saia da máquina com <code>exit</code>, <b>uma linha de cada vez</b>, esperando o prompt entre elas. Em geral são dois: um sai do <code>ec2-user</code>, o outro encerra a sessão SSM. Podem ser três, se o <code>sudo su - ec2-user</code> do passo 4.1 tiver sido executado quando você já era <code>ec2-user</code> — o que importa não é a contagem, é o prompt voltar a ser o do seu WSL. O 500 da Fase 1 tem que virar 200.</p>
         <div class="cmd"><span class="cmd-label">Na bia-dev — repita até o prompt virar o do WSL</span><button class="copy" type="button">copiar</button><pre><span class="p">[ec2-user bia]$ </span>exit</pre></div>
         <div class="note n-warn"><b>Não cole o <code>exit</code> junto com o <code>curl</code></b><p>São <b>máquinas diferentes</b>, e por isso são dois blocos separados aqui. Coladas de uma vez, as linhas depois do <code>exit</code> ficam no buffer de entrada e acabam executadas no shell errado — ou reaparecem mais tarde como saída solta, sem relação aparente com o que você digitou.</p><p>O <code>curl</code> abaixo só funciona no WSL: <code>$API_URL</code> vem do <code>variaveis.sh</code> do passo 0.4 e <b>não existe</b> dentro da bia-dev.</p></div>
@@ -1606,7 +1709,7 @@ Server: AmazonS3
   psql "host=bia.xxxxxxxxxxxx.us-east-1.rds.amazonaws.com port=5432 user=postgres dbname=bia sslmode=require" \
   -c 'SELECT titulo, importante, "createdAt" FROM "Tarefas" ORDER BY "createdAt" DESC LIMIT 5;'</pre></div>
         <div class="note n-warn"><b>Quatro blocos, e cada um vai sozinho</b><p>O <code>start-session</code> e o <code>sudo su -</code> abrem shells novos: linhas coladas junto com eles ficam no buffer do shell de fora e só rodam quando você sair. É o mesmo cuidado do passo 4.1.</p><p>O bloco 3 tem um motivo a mais para ir sozinho: o <code>read</code> lê a <b>próxima linha</b> da entrada. Colado junto com o bloco 4, quem vira a senha é o comando de baixo — o prompt <code>Senha do RDS:</code> aparece e some sem esperar você digitar, e a consulta falha em seguida.</p></div>
-        <div class="note n-tip"><b>Por que o <code>psql</code> roda em contêiner</b><p>A bia-dev tem Docker desde o Desafio 2, mas <b>não</b> tem o cliente do PostgreSQL instalado: chamar <code>psql</code> direto responde <code>-bash: psql: command not found</code>. O contêiner resolve sem instalar nada na máquina — é o mesmo recurso do bloco opcional do passo 4.5. A imagem vem do registry público da AWS, como as do Node, para não esbarrar no limite de download do Docker Hub.</p></div>
+        <div class="note n-tip"><b>Por que o <code>psql</code> roda em contêiner</b><p>A bia-dev tem Docker desde o Desafio 2, mas <b>não</b> tem o cliente do PostgreSQL instalado: chamar <code>psql</code> direto responde <code>-bash: psql: command not found</code>. O contêiner resolve sem instalar nada na máquina — é o mesmo recurso do bloco opcional do passo 4.6. A imagem vem do registry público da AWS, como as do Node, para não esbarrar no limite de download do Docker Hub.</p></div>
         <div class="out good"><span class="out-label">Resposta esperada — com o título que <b>você</b> digitou</span><pre>   titulo    | importante |         createdAt
 -------------+------------+----------------------------
  Teste do S3 | t          | 2026-09-01 14:38:57.561+00
@@ -1843,6 +1946,21 @@ S3    &gt;  o bucket pode ficar: vazio ele nao custa nada</pre></div>
               <td>Passo 4.1 — use <code>sudo docker</code> ou <code>usermod -aG docker</code></td>
             </tr>
             <tr>
+              <td><code>docker: 'compose' is not a docker command</code></td>
+              <td>A bia-dev tem o Docker, mas não o plugin do Compose</td>
+              <td>Bloco de fallback do passo 4.1 — ou siga pela alternativa em <code>docker run</code> do 4.5</td>
+            </tr>
+            <tr>
+              <td>A migrate fica pendurada e termina em <code>ETIMEDOUT</code></td>
+              <td>O <code>compose.yml</code> aponta para o RDS, mas o SG do banco não aceita a origem da bia-dev</td>
+              <td>Passo 3.1 — o diagrama da Fase 3 mostra onde a conexão morre</td>
+            </tr>
+            <tr>
+              <td>A migrate reclama do banco <code>database</code>, e não do RDS</td>
+              <td>O contêiner subiu antes da edição do passo 4.4 e guardou as variáveis antigas</td>
+              <td><code>docker compose up -d --force-recreate server</code> (passo 4.5)</td>
+            </tr>
+            <tr>
               <td><code>Database bia already exists</code></td>
               <td>O <code>db:create</code> já tinha rodado</td>
               <td>Não é erro: o <code>db:migrate</code> na sequência segue normalmente</td>
@@ -1865,7 +1983,7 @@ S3    &gt;  o bucket pode ficar: vazio ele nao custa nada</pre></div>
             <tr>
               <td><code>database "bia" does not exist</code></td>
               <td>O RDS está acessível, mas ninguém criou o database</td>
-              <td>Passo 4.4</td>
+              <td>Passo 4.5</td>
             </tr>
             <tr>
               <td><code>-bash: psql: command not found</code></td>
