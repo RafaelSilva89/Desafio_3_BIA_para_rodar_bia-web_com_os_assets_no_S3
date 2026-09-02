@@ -200,11 +200,21 @@ O ECR é o "GitHub de imagens Docker" da AWS. A imagem `bia:latest` está aqui, 
 - **Task Definition** `task-def-bia` — a "receita": qual imagem usar, quanta CPU e memória, o mapeamento de portas `80:8080` e as variáveis de ambiente do banco.
 - **Service** `service-bia` — o gerente: lê a receita, lança a task e a mantém de pé.
 
+> 💡 Essa EC2 do cluster aparece no console do EC2 com o nome `ECS Instance - cluster-bia`, gerado pelo Auto Scaling Group — a captura está em [Instâncias EC2](#instâncias-ec2).
+
 ### Instâncias EC2
 
 ![Instâncias EC2 do laboratório](imagens/EC2.png)
 
 A instância `bia-dev` é a máquina de apoio de onde a migração do banco será executada. (Os identificadores estão tarjados nas capturas — são específicos da conta e não acrescentam nada a quem lê.)
+
+Repare no que **não** aparece na captura acima: a máquina do cluster ECS. Ela foi tirada com o laboratório desligado — e quem cria essa EC2 é o Auto Scaling Group do `cluster-bia`, então ela só existe enquanto o cluster está de pé. Com o cluster ligado, ela aparece na mesma lista:
+
+![A EC2 "ECS Instance - cluster-bia" rodando, ao lado da bia-dev](imagens/ECS_Instance_cluster-bia.png)
+
+O nome `ECS Instance - cluster-bia` é gerado pelo Auto Scaling Group, e não escolhido por você: é assim que se reconhece, no console do EC2, qual máquina pertence a qual cluster. É essa instância que responde em `http://xx.xx.xx.xx` — a API que o site do S3 chama.
+
+> 💡 A lista está filtrada por `Instance state = running`, por isso as máquinas paradas não aparecem. A `bia-dev` ainda consta porque a captura pegou o momento em que ela estava sendo desligada (`Stopping`). A do cluster continua `Running` — e derrubá-la exige mexer na capacidade desejada do ASG, não um `stop` ([Fase 9](#fase-9--encerrar-o-laboratório-sem-deixar-conta-aberta)).
 
 ### Banco de dados RDS
 
