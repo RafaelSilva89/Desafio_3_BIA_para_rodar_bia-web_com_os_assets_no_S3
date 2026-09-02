@@ -1036,6 +1036,53 @@ voce@maquina:~$</pre></div>
         <p>O banco local continua subindo junto, e fica sem uso — quem responde passa a ser o RDS. Quem tiver pressa encontra no 4.5 uma alternativa que dispensa o build da imagem.</p>
       </div>
 
+      <p>A Fase 3 abriu esse caminho — e vale ver o desenho inteiro agora, porque é aqui que ele é usado. O <code>compose.yml</code> do passo 4.4 vai apontar para o endereço certo do RDS; se mesmo assim a conexão não voltar, o problema está na camada de rede, e não no arquivo.</p>
+      <div class="ascii" id="diagrama-rede">
+<pre>
++---------------------------------------------------------------------------+
+|  DIAGRAMA DE REDE -- O PROBLEMA DE SECURITY GROUP                         |
+|  O compose.yml aponta para o RDS certo, mas a conexao e barrada na rede.  |
++---------------------------------------------------------------------------+
+
+   ORIGENS (tentando falar com o banco na porta 5432)
+
+ +--------------------------------+    +--------------------------------+
+ | ORIGEM 1                       |    | ORIGEM 2   (a sua EC2)         |
+ | Nome: bia-web                  |    | Nome: bia-dev                  |
+ | SG:   sg-xxxxxxxxxxxx-web      |    | SG:   sg-xxxxxxxxxxxx-dev      |
+ +--------------------------------+    +--------------------------------+
+                |                                      |
+                v                                      v
+         [ OK ] PERMITIDO                       [ X ] BLOQUEADO
+      (liberado no bia-db)                 (nao liberado no bia-db)
+                |                                      |
+                |                                      +-- a conexao morre
+                |                                          aqui, antes de
+                v                                          chegar ao RDS
+ +-----------------------------------------------------+
+ | DESTINO -- RDS                                      |
+ | Host:            bia.xxxxxxxxxxxx.us-east-1.rds...  |
+ | SG alvo:         bia-db   (sg-xxxxxxxxxxxx-db)      |
+ | Porta de escuta: 5432                               |
+ +-----------------------------------------------------+
+
++---------------------------------------------------------------------------+
+|  A SOLUCAO                                                                |
++---------------------------------------------------------------------------+
+  Problema:  a bia-dev usa o SG bia-dev, que nao esta no inbound do bia-db.
+  Acao:      acrescentar uma regra de entrada no bia-db liberando o bia-dev.
+
+    [ regra a aplicar no sg-xxxxxxxxxxxx-db ]
+      + Porta:      5432
+        Source:     sg-xxxxxxxxxxxx-dev   (o Security Group, nao um IP)
+        Descricao:  "acesso vindo de bia-dev"
+
+  Resultado: a ORIGEM 2 passa a ter o status [ OK ] PERMITIDO.
++---------------------------------------------------------------------------+
+</pre>
+      </div>
+      <p>Quem aplica essa regra é o <b>passo 3.1</b>, e o <b>3.2</b> confirma as duas origens. Com ela no lugar, a ORIGEM 2 fica liberada e a migrate do 4.5 passa direto.</p>
+
       <div class="step" id="passo-4-1">
         <div class="step-top"><a class="step-id" href="#passo-4-1">4.1</a><h3>Entrar na máquina e conferir o Docker</h3><span class="where w-ec2">BIA-DEV</span></div>
         <p>A bia-dev já tem Docker desde o Desafio 2 — a interface <code>172.17.0.1</code> que apareceu no <code>hostname -I</code> é a bridge dele. Nada de <code>dnf install</code>: o que precisamos vem em imagem.</p>
@@ -1167,14 +1214,7 @@ Loaded configuration file "config/database.js".
           <summary>A migrate travou até dar timeout</summary>
           <div class="out bad"><span class="out-label">O que aparece</span><pre>SequelizeConnectionError: connect ETIMEDOUT
     ... bia.xxxxxxxxxxxx.us-east-1.rds.amazonaws.com:5432</pre></div>
-          <div class="ascii">
-<pre>
-  compose.yml --> RDS  [ok]        conexao na 5432 --> SG bia-db  [X]
-  -------------------------------------------------------------------
-  o timeout mora na rede, nao no arquivo: a regra de entrada
-  liberando o SG da bia-dev nao esta no lugar
-</pre>
-          </div>
+          <p>É exatamente o cenário do <a href="#diagrama-rede">diagrama de rede</a> no início desta fase: a ORIGEM 2 ainda está bloqueada, e a conexão morre antes de chegar ao RDS.</p>
           <p>O apontamento do passo 4.4 está certo; o que falta é a regra do <b>passo 3.1</b>. Refaça-a e rode a migrate de novo — o contêiner nem precisa subir outra vez.</p>
         </details>
         <details class="fallback">
