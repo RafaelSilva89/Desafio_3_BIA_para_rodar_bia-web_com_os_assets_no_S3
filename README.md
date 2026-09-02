@@ -42,7 +42,8 @@ Quebrar um monolito em duas metades: o **front-end React** vira arquivo estátic
 9. [Checklist de entrega](#9-checklist-de-entrega)
 10. [Erros que apareceram e como resolvi](#10-erros-que-apareceram-e-como-resolvi)
 11. [O que aprendi](#11-o-que-aprendi)
-12. [Créditos e referências](#12-créditos-e-referências)
+12. [Encerrando os serviços na AWS](#12-encerrando-os-serviços-na-aws)
+13. [Créditos e referências](#13-créditos-e-referências)
 
 ---
 
@@ -978,6 +979,8 @@ RDS  >  Databases  >  bia  >  Actions  >  Stop temporarily
 
 > 🔁 **Ao religar, o IP da API muda** — e o site publicado continua chamando o endereço antigo, que morreu. O ritual de volta é: refazer o passo de listar instâncias, atualizar `API_URL` no `variaveis.sh` e **rodar a Fase 6 de novo**. É precisamente o problema que um Load Balancer resolve em produção.
 
+> 🖱️ **Prefere clicar?** A seção [Encerrando os serviços na AWS](#12-encerrando-os-serviços-na-aws) mostra o mesmo encerramento pelo Console, tela por tela — incluindo um passo a mais: zerar as tasks do `service-bia` antes de mexer no Auto Scaling.
+
 ---
 
 ## 7. Os três scripts, explicados linha a linha
@@ -1242,7 +1245,104 @@ Todos abaixo aconteceram de verdade durante a execução. O padrão que se repet
 
 ---
 
-## 12. Créditos e referências
+## 12. Encerrando os serviços na AWS
+
+Desligar o notebook **não pausa nada**. As EC2 e o RDS continuam de pé, e continuam cobrando por hora — o laboratório não tem botão de "sair". Encerrar faz parte do trabalho, e é o passo que separa um desafio concluído de uma fatura no fim do mês.
+
+A [Fase 9](#fase-9--encerrar-o-laboratório-sem-deixar-conta-aberta) faz isso por linha de comando. Esta seção mostra o mesmo caminho pelo **Console**, tela por tela.
+
+> ⚠️ **Só depois de guardar as evidências.** Parar o cluster derruba a API, e o site do S3 passa a carregar sem dados. Os prints das [Fases 7](#fase-7--confirmar-o-bucket-servindo-o-site) e [8](#fase-8--salvar-um-registro-no-banco-pelo-site) têm de estar feitos antes de começar.
+
+**A ordem importa**, e o motivo de cada posição está na terceira coluna:
+
+```
+  1. service-bia     desired tasks = 0      para o ECS nao relancar a task
+  2. Auto Scaling    desired/min/max = 0    derruba a EC2 do cluster
+  3. bia-dev         stop instance          a maquina de apoio da migrate
+  4. RDS "bia"       stop temporarily       o item mais caro da conta
+```
+
+Derrubar de baixo para cima não funciona: com o service ainda pedindo uma task, o ECS reage a cada peça que você tira.
+
+### 12.1 Zerar as tasks do `service-bia`
+
+**Por quê:** o service é o *gerente* — o trabalho dele é manter a task de pé. Enquanto o número de tasks desejadas for `1`, ele relança o contêiner que você derrubar, e você fica brigando com a própria infraestrutura. Zerando aqui, o resto desce sem resistência.
+
+```
+ECS  >  Clusters  >  cluster-bia  >  Services  >  marcar service-bia  >  Update
+```
+
+![Serviço service-bia selecionado no cluster-bia, com o botão Update em destaque](imagens/Parar_ECS_Service_1.png)
+
+Na tela de update, o campo que interessa é **Desired tasks**. Troque `1` por `0` e confirme em **Update**, no fim da página — todo o resto do formulário fica como está.
+
+![Campo Desired tasks zerado na tela de update do service-bia](imagens/Parar_ECS_Service_2.png)
+
+A confirmação vem na aba **Tasks** do cluster: `0 running`.
+
+### 12.2 Zerar o Auto Scaling Group
+
+**Por quê:** a EC2 que roda a API não foi criada por você — ela pertence a um **Auto Scaling Group** com capacidade desejada `1`. Se você mandar `Stop` ou `Terminate` nela direto, o ASG entende que faltou capacidade e **sobe outra no lugar**. A cobrança continua, e a impressão é de que a AWS ignorou o comando. Quem manda aqui é a capacidade desejada.
+
+```
+EC2  >  Auto Scaling groups  >  Infra-ECS-Cluster-cluster-bia-...  >  Actions  >  Edit
+```
+
+![Auto Scaling Group do cluster-bia selecionado, com o menu Actions aberto em Edit](imagens/Parar_ECS_1.png)
+
+Em **Group size**, os três campos vão a zero — *Desired capacity*, *Min desired capacity* e *Max desired capacity* — e o **Update** fica no fim da página. Zerar só o desejado, deixando o mínimo em `1`, faz o ASG voltar a subir a instância.
+
+![Group size com desired, min e max zerados na edição do Auto Scaling Group](imagens/Parar_ECS_2.png)
+
+Repare na tag `Name` no rodapé dessa tela: `ECS Instance - cluster-bia`. É ela que dá o nome da máquina na lista do EC2 — a mesma que aparece na captura de [Instâncias EC2](#instâncias-ec2).
+
+### 12.3 Parar a `bia-dev`
+
+**Por quê:** a `bia-dev` é a máquina de apoio; o papel dela terminou quando a migração rodou. Diferente da EC2 do cluster, esta é sua e obedece ao `Stop` — nada a recria. E parar é seguro: o acesso a ela é por **SSM**, que não depende de IP, então ao religar o agente se registra sozinho e a sessão volta a abrir.
+
+```
+EC2  >  Instances  >  marcar bia-dev  >  Instance state  >  Stop instance
+```
+
+![Instância bia-dev selecionada, com o menu Instance state aberto em Stop instance](imagens/Parar_EC2_1.png)
+
+O diálogo de confirmação traz o aviso que mais importa nesta seção: **parar a instância não zera a conta**. Você deixa de pagar pelo uso da máquina, mas continua pagando pelos volumes EBS e por qualquer Elastic IP associado.
+
+![Diálogo Stop instance, com o aviso de cobrança de recursos associados](imagens/Parar_EC2_2.png)
+
+### 12.4 Parar o RDS
+
+**Por quê:** é o item mais caro do laboratório, e o único que sobreviveria por semanas sem ninguém notar. O banco fica preservado — parar não apaga nada.
+
+```
+RDS  >  Databases  >  bia  >  Actions  >  Stop temporarily
+```
+
+![Banco bia selecionado no RDS, com o menu Actions aberto em Stop temporarily](imagens/Parar_RDS_1.png)
+
+A tela de confirmação diz, sem rodeios, as três coisas que se precisa saber — e é por isso que vale ler em vez de clicar direto:
+
+- a pausa vale **por até 7 dias**, e a instância **religa sozinha** na data que a própria tela informa;
+- o que a pausa suspende são as **horas de instância**; o armazenamento provisionado e os backups continuam sendo cobrados;
+- se quiser, dá para guardar um **snapshot** antes de parar.
+
+![Diálogo Stop DB instance temporarily, com o aviso dos 7 dias e da cobrança de armazenamento](imagens/Parar_RDS_2.png)
+
+Para uma pausa mais longa que uma semana, o caminho certo não é este: é **apagar a instância com snapshot**, e recriar a partir dele quando precisar.
+
+### O que continua custando com tudo parado
+
+Os discos **EBS** das máquinas e o **armazenamento do RDS** são cobrados enquanto existirem — parar uma EC2 não apaga o disco dela. São alguns dólares por mês, não por hora. O bucket com o site é desprezível: alguns megabytes de arquivos estáticos.
+
+### Ao religar
+
+A ordem se inverte: RDS → Auto Scaling (capacidade de volta a `1`) → `service-bia` (tasks de volta a `1`) → `bia-dev`, se for precisar dela.
+
+> 🔁 **O IP da API muda a cada religada** — e o site publicado continua chamando o endereço antigo, que morreu junto com a instância. O ritual de volta inclui atualizar a `API_URL` e **rodar a [Fase 6](#fase-6--gerar-os-assets-e-sincronizar-com-o-bucket) de novo**. É exatamente o problema que um Load Balancer resolve em produção.
+
+---
+
+## 13. Créditos e referências
 
 ### Créditos
 
